@@ -176,7 +176,7 @@ class NightFlightGame:
         self.mountains = self.build_mountains()
 
         self.camera_world_w = 510.0
-        self.camera_world_h = self.camera_world_w * SCREEN_H / VIEW_W
+        self.camera_world_h = self.camera_world_w
         self.tile_world = 34.0
         self.current_visible: set[tuple[int, int]] = set()
         self.remembered: set[tuple[int, int]] = set()
@@ -435,19 +435,15 @@ class NightFlightGame:
         return None
 
     def world_to_screen(self, point: pygame.Vector2) -> pygame.Vector2:
-        left = self.actual_pos.x - self.camera_world_w / 2
-        top = self.actual_pos.y - self.camera_world_h / 2
-        return pygame.Vector2(
-            OBSERVATION_RECT.left + (point.x - left) / self.camera_world_w * OBSERVATION_SIZE,
-            OBSERVATION_RECT.top + (point.y - top) / self.camera_world_h * OBSERVATION_SIZE,
-        )
+        _, scale, origin = self.chart_geometry(OBSERVATION_RECT)
+        return pygame.Vector2(origin.x + point.x * scale, origin.y + point.y * scale)
 
     def chart_geometry(self, rect: pygame.Rect) -> tuple[pygame.Rect, float, pygame.Vector2]:
         inner = rect.inflate(-10, -10)
-        scale = min(inner.width / self.map_w, inner.height / self.map_h)
+        scale = min(inner.width / self.camera_world_w, inner.height / self.camera_world_h)
         origin = pygame.Vector2(
-            inner.centerx - self.map_w * scale / 2,
-            inner.centery - self.map_h * scale / 2,
+            inner.centerx - self.estimated_pos.x * scale,
+            inner.centery - self.estimated_pos.y * scale,
         )
         return inner, scale, origin
 
@@ -694,8 +690,8 @@ class NightFlightGame:
         def chart_point(point: pygame.Vector2) -> pygame.Vector2:
             return pygame.Vector2(origin.x + point.x * scale, origin.y + point.y * scale)
 
-        # 좌측 주 화면의 항공기는 조종사가 추정하는 위치에 표시한다.
-        plane_position = chart_point(self.estimated_pos)
+        # 비행기는 관측구 중앙에 고정하고, 추정 위치를 기준으로 지도가 이동한다.
+        plane_position = pygame.Vector2(chart_rect.center)
         plane = pygame.transform.rotozoom(self.player_base, -self.heading, 0.30)
         plane_rect = plane.get_rect(center=plane_position)
         self.screen.blit(plane, plane_rect)
@@ -806,6 +802,8 @@ class NightFlightGame:
                 max(1, int(self.tile_world * scale + 1)),
                 max(1, int(self.tile_world * scale + 1)),
             )
+            if not tile_rect.colliderect(rect):
+                continue
             pygame.draw.rect(self.screen, color, tile_rect)
             if contour_width > 0:
                 pygame.draw.rect(
@@ -824,17 +822,22 @@ class NightFlightGame:
 
         for village in self.villages:
             key = (int(village.x // self.tile_world), int(village.y // self.tile_world))
-            if key in self.remembered:
-                pygame.draw.circle(self.screen, (200, 83, 134), chart_point(village), max(3, int(6 * scale + 2)))
+            point = chart_point(village)
+            if key in self.remembered and rect.collidepoint(point):
+                pygame.draw.circle(self.screen, (200, 83, 134), point, max(3, int(6 * scale + 2)))
         for index in self.known_towers:
-            pygame.draw.circle(self.screen, (232, 188, 42), chart_point(self.towers[index]), max(3, int(6 * scale + 2)))
+            point = chart_point(self.towers[index])
+            if rect.collidepoint(point):
+                pygame.draw.circle(self.screen, (232, 188, 42), point, max(3, int(6 * scale + 2)))
 
         start_key = (int(self.start.x // self.tile_world), int(self.start.y // self.tile_world))
-        if start_key in self.remembered:
-            pygame.draw.circle(self.screen, (25, 25, 25), chart_point(self.start), 3)
+        start_point = chart_point(self.start)
+        if start_key in self.remembered and rect.collidepoint(start_point):
+            pygame.draw.circle(self.screen, (25, 25, 25), start_point, 3)
         destination_key = (int(self.destination.x // self.tile_world), int(self.destination.y // self.tile_world))
-        if destination_key in self.remembered:
-            pygame.draw.circle(self.screen, PURPLE, chart_point(self.destination), 4)
+        destination_point = chart_point(self.destination)
+        if destination_key in self.remembered and rect.collidepoint(destination_point):
+            pygame.draw.circle(self.screen, PURPLE, destination_point, 4)
 
         if show_estimate:
             estimate = chart_point(self.estimated_pos)
