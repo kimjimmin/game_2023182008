@@ -13,6 +13,9 @@ SCREEN_W = 1280
 SCREEN_H = 720
 VIEW_W = 850
 PANEL_W = SCREEN_W - VIEW_W
+OBSERVATION_SIZE = SCREEN_H
+OBSERVATION_X = (VIEW_W - OBSERVATION_SIZE) // 2
+OBSERVATION_RECT = pygame.Rect(OBSERVATION_X, 0, OBSERVATION_SIZE, OBSERVATION_SIZE)
 FPS = 60
 
 ROOT = Path(__file__).resolve().parent
@@ -114,6 +117,7 @@ class NightFlightGame:
         self.font_md = load_font(21)
         self.font_lg = load_font(28, bold=True)
         self.font_xl = load_font(38, bold=True)
+        self.globe_mask, self.globe_vignette = self.make_globe_effects()
 
         self.map_surface = pygame.image.load(str(ASSET_DIR / "map.png")).convert()
         self.map_w, self.map_h = self.map_surface.get_size()
@@ -249,8 +253,8 @@ class NightFlightGame:
         self.storm_announced = False
         self.storm_intensity = 0.0
         self.storm_rotation = 0.0
-        self.storm_target_rotation = 0.0
         self.storm_rotation_direction = 1
+        self.storm_rotation_speed = 0.0
         self.storm_rotation_timer = 0.0
         self.storm_gust_timer = 0.0
         self.storm_wind = pygame.Vector2()
@@ -277,6 +281,32 @@ class NightFlightGame:
     def storm_visual_scale(self) -> float:
         return 1.0 + self.storm_intensity * 0.14
 
+    @staticmethod
+    def make_globe_effects() -> tuple[pygame.Surface, pygame.Surface]:
+        """관측 화면을 타원형 구처럼 보이게 하는 부드러운 마스크와 가장자리 음영."""
+        sample_size = 180
+        mask_small = pygame.Surface((sample_size, sample_size), pygame.SRCALPHA)
+        vignette_small = pygame.Surface((sample_size, sample_size), pygame.SRCALPHA)
+        center = (sample_size - 1) / 2
+
+        for y in range(sample_size):
+            for x in range(sample_size):
+                nx = (x - center) / (sample_size * 0.48)
+                ny = (y - center) / (sample_size * 0.44)
+                radius = math.sqrt(nx * nx + ny * ny)
+                edge_alpha = int(255 * clamp((1.0 - radius) / 0.10, 0.0, 1.0))
+                mask_small.set_at((x, y), (255, 255, 255, edge_alpha))
+
+                limb = clamp((radius - 0.62) / 0.38, 0.0, 1.0)
+                shade_alpha = int(145 * limb * edge_alpha / 255)
+                vignette_small.set_at((x, y), (7, 12, 21, shade_alpha))
+
+        size = (OBSERVATION_SIZE, OBSERVATION_SIZE)
+        return (
+            pygame.transform.smoothscale(mask_small, size),
+            pygame.transform.smoothscale(vignette_small, size),
+        )
+
     def update_storm(self, dt: float) -> None:
         if self.flight_time < 23.0:
             self.storm_intensity = 0.0
@@ -286,9 +316,10 @@ class NightFlightGame:
         if not self.storm_active:
             self.storm_active = True
             self.storm_rotation_direction = random.choice([-1, 1])
+            self.storm_rotation_speed = random.uniform(5.0, 11.0)
             wind_heading = random.uniform(0, 360)
             self.storm_wind = heading_vector(wind_heading) * random.uniform(3.2, 5.2)
-            self.storm_rotation_timer = 0.0
+            self.storm_rotation_timer = random.uniform(6.0, 15.0)
             self.storm_gust_timer = 0.0
 
         if not self.storm_announced:
@@ -298,14 +329,16 @@ class NightFlightGame:
         self.storm_intensity = clamp((self.flight_time - 23.0) / 4.0, 0.0, 1.0)
         self.storm_rotation_timer -= dt
         if self.storm_rotation_timer <= 0:
-            if random.random() < 0.35:
-                self.storm_rotation_direction *= -1
-            magnitude = random.uniform(22.0, 78.0) * self.storm_intensity
-            self.storm_target_rotation = self.storm_rotation_direction * magnitude
-            self.storm_rotation_timer = random.uniform(1.2, 2.6)
+            self.storm_rotation_direction *= -1
+            self.storm_rotation_speed = random.uniform(5.0, 11.0)
+            self.storm_rotation_timer = random.uniform(6.0, 15.0)
         self.storm_rotation += (
-            self.storm_target_rotation - self.storm_rotation
-        ) * min(1.0, dt * (1.4 + self.storm_intensity))
+            self.storm_rotation_direction
+            * self.storm_rotation_speed
+            * self.storm_intensity
+            * dt
+        )
+        self.storm_rotation = (self.storm_rotation + 180.0) % 360.0 - 180.0
 
         self.storm_gust_timer -= dt
         if self.storm_gust_timer <= 0 and self.storm_intensity > 0:
@@ -386,13 +419,15 @@ class NightFlightGame:
             self.post_message("무선사 작업을 취소했습니다.")
 
     def screen_to_world(self, point: pygame.Vector2) -> pygame.Vector2 | None:
-        if point.x >= VIEW_W:
+        center = pygame.Vector2(OBSERVATION_RECT.center)
+        nx = (point.x - center.x) / (OBSERVATION_SIZE * 0.48)
+        ny = (point.y - center.y) / (OBSERVATION_SIZE * 0.44)
+        if nx * nx + ny * ny > 1.0:
             return None
         if self.storm_intensity > 0.01:
-            screen_center = pygame.Vector2(VIEW_W / 2, SCREEN_H / 2)
-            local = point - screen_center
-            point = screen_center + local.rotate(-self.storm_rotation) / self.storm_visual_scale()
-        _, scale, origin = self.chart_geometry(pygame.Rect(0, 0, VIEW_W, SCREEN_H))
+            local = point - center
+            point = center + local.rotate(-self.storm_rotation) / self.storm_visual_scale()
+        _, scale, origin = self.chart_geometry(OBSERVATION_RECT)
         world_x = (point.x - origin.x) / scale
         world_y = (point.y - origin.y) / scale
         if 0 <= world_x < self.map_w and 0 <= world_y < self.map_h:
@@ -403,8 +438,8 @@ class NightFlightGame:
         left = self.actual_pos.x - self.camera_world_w / 2
         top = self.actual_pos.y - self.camera_world_h / 2
         return pygame.Vector2(
-            (point.x - left) / self.camera_world_w * VIEW_W,
-            (point.y - top) / self.camera_world_h * SCREEN_H,
+            OBSERVATION_RECT.left + (point.x - left) / self.camera_world_w * OBSERVATION_SIZE,
+            OBSERVATION_RECT.top + (point.y - top) / self.camera_world_h * OBSERVATION_SIZE,
         )
 
     def chart_geometry(self, rect: pygame.Rect) -> tuple[pygame.Rect, float, pygame.Vector2]:
@@ -652,7 +687,7 @@ class NightFlightGame:
         self.screen.blit(tile, dst)
 
     def draw_left_view(self) -> None:
-        chart_rect = pygame.Rect(0, 0, VIEW_W, SCREEN_H)
+        chart_rect = OBSERVATION_RECT
         self.draw_discovered_chart(chart_rect, show_estimate=False)
         _, scale, origin = self.chart_geometry(chart_rect)
 
@@ -672,7 +707,7 @@ class NightFlightGame:
             pygame.draw.line(self.screen, CYAN, (p.x, p.y - 15), (p.x, p.y + 15), 1)
 
         # 수평계는 지도 상단에 독립 계기로 유지한다.
-        center = pygame.Vector2(VIEW_W // 2, 80)
+        center = pygame.Vector2(chart_rect.centerx, chart_rect.top + 80)
         length = 160
         angle = math.radians(-self.bank)
         line = pygame.Vector2(math.cos(angle), math.sin(angle)) * length / 2
@@ -680,8 +715,9 @@ class NightFlightGame:
         pygame.draw.circle(self.screen, (83, 74, 54), center, 7, 2)
         pygame.draw.line(self.screen, (83, 74, 54), (center.x, center.y - 18), (center.x, center.y + 18), 2)
 
-        self.draw_text("관측 지도 / 미확인 영역은 흰색", (16, 14), self.font_sm, (52, 55, 61))
-        self.draw_text("클릭: 좌표 지정", (16, 38), self.font_xs, (92, 96, 103))
+        text_x = chart_rect.left + 16
+        self.draw_text("관측 지도 / 미확인 영역은 흰색", (text_x, 14), self.font_sm, (52, 55, 61))
+        self.draw_text("클릭: 좌표 지정", (text_x, 38), self.font_xs, (92, 96, 103))
         legend = [
             ((218, 224, 214), "평지"),
             ((225, 201, 183), "낮은 지형"),
@@ -690,12 +726,12 @@ class NightFlightGame:
         ]
         for index, (color, label) in enumerate(legend):
             ly = 72 + index * 20
-            pygame.draw.rect(self.screen, color, (16, ly, 16, 14))
-            pygame.draw.rect(self.screen, (80, 82, 86), (16, ly, 16, 14), 1)
-            self.draw_text(label, (38, ly - 2), self.font_xs, (74, 77, 82))
+            pygame.draw.rect(self.screen, color, (text_x, ly, 16, 14))
+            pygame.draw.rect(self.screen, (80, 82, 86), (text_x, ly, 16, 14), 1)
+            self.draw_text(label, (text_x + 22, ly - 2), self.font_xs, (74, 77, 82))
 
         if self.last_mess_cause != "없음":
-            cause_rect = pygame.Rect(190, 12, VIEW_W - 206, 42)
+            cause_rect = pygame.Rect(chart_rect.left + 190, 12, chart_rect.width - 206, 42)
             cause_surface = pygame.Surface(cause_rect.size, pygame.SRCALPHA)
             cause_surface.fill((28, 5, 8, 226))
             self.screen.blit(cause_surface, cause_rect)
@@ -706,14 +742,14 @@ class NightFlightGame:
         clearance = int(self.current_clearance())
         terrain = int(self.terrain_height(self.actual_pos))
         if clearance <= 150:
-            warning_rect = pygame.Rect(VIEW_W // 2 - 175, 155, 350, 42)
+            warning_rect = pygame.Rect(chart_rect.centerx - 175, 155, 350, 42)
             pygame.draw.rect(self.screen, (42, 4, 7), warning_rect, border_radius=5)
             pygame.draw.rect(self.screen, (242, 35, 35), warning_rect, 2, border_radius=5)
             self.draw_text(f"지형 접근 경고 · 여유 고도 {clearance}m",
                            warning_rect.center, self.font_md, (255, 74, 74), "center")
-        self.draw_text(f"추정 지상 여유 {clearance}m", (16, SCREEN_H - 54), self.font_sm,
+        self.draw_text(f"추정 지상 여유 {clearance}m", (text_x, SCREEN_H - 54), self.font_sm,
                        GREEN if clearance > 250 else AMBER if clearance > 100 else RED)
-        self.draw_text(f"현재 지형 추정 {terrain}m", (16, SCREEN_H - 30), self.font_xs, (92, 96, 103))
+        self.draw_text(f"현재 지형 추정 {terrain}m", (text_x, SCREEN_H - 30), self.font_xs, (92, 96, 103))
 
     def draw_gauge(self, rect: pygame.Rect, title: str, value: str, ratio: float,
                    color: tuple[int, int, int], hidden: bool = False) -> None:
@@ -892,44 +928,59 @@ class NightFlightGame:
         self.draw_text("운항 지시", (rect.x + 14, rect.y + 9), self.font_xs, AMBER)
         self.draw_text(self.message, (rect.x + 14, rect.y + 31), self.font_sm, TEXT)
 
-    def apply_storm_rotation(self) -> None:
-        if self.storm_intensity <= 0.01:
-            return
+    def apply_observation_globe(self) -> None:
+        source = self.screen.subsurface(OBSERVATION_RECT).copy()
+        angle = self.storm_rotation if self.storm_intensity > 0.01 else 0.0
+        scale = self.storm_visual_scale() if self.storm_intensity > 0.01 else 1.0
+        rotated = pygame.transform.rotozoom(source, angle, scale)
 
-        left_image = self.screen.subsurface((0, 0, VIEW_W, SCREEN_H)).copy()
-        rotated = pygame.transform.rotozoom(
-            left_image,
-            self.storm_rotation,
-            self.storm_visual_scale(),
+        globe = pygame.Surface((OBSERVATION_SIZE, OBSERVATION_SIZE), pygame.SRCALPHA)
+        globe.blit(rotated, rotated.get_rect(center=globe.get_rect().center))
+
+        if self.storm_intensity > 0.01:
+            darkness = pygame.Surface(globe.get_size(), pygame.SRCALPHA)
+            darkness.fill((16, 22, 35, int(38 + 65 * self.storm_intensity)))
+            globe.blit(darkness, (0, 0))
+
+            rain_count = int(20 + 45 * self.storm_intensity)
+            for _ in range(rain_count):
+                x = random.randrange(0, OBSERVATION_SIZE)
+                y = random.randrange(0, OBSERVATION_SIZE)
+                length = random.randrange(8, 25)
+                pygame.draw.line(
+                    globe,
+                    (155, 176, 196),
+                    (x, y),
+                    (x - int(length * 0.45), y + length),
+                    1,
+                )
+
+        globe.blit(self.globe_vignette, (0, 0))
+        globe.blit(self.globe_mask, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+
+        pygame.draw.rect(self.screen, (9, 12, 18), (0, 0, VIEW_W, SCREEN_H))
+        shadow = pygame.Surface((OBSERVATION_SIZE, OBSERVATION_SIZE), pygame.SRCALPHA)
+        shadow_rect = pygame.Rect(16, 51, OBSERVATION_SIZE - 32, OBSERVATION_SIZE - 82)
+        pygame.draw.ellipse(shadow, (0, 0, 0, 155), shadow_rect)
+        self.screen.blit(shadow, (OBSERVATION_RECT.left + 7, OBSERVATION_RECT.top + 9))
+        self.screen.blit(globe, OBSERVATION_RECT)
+
+        rim = pygame.Rect(
+            OBSERVATION_RECT.left + 14,
+            OBSERVATION_RECT.top + 43,
+            OBSERVATION_SIZE - 28,
+            OBSERVATION_SIZE - 86,
         )
-        rotated_rect = rotated.get_rect(center=(VIEW_W // 2, SCREEN_H // 2))
-        pygame.draw.rect(self.screen, (30, 34, 42), (0, 0, VIEW_W, SCREEN_H))
-        self.screen.blit(rotated, rotated_rect)
+        pygame.draw.ellipse(self.screen, (91, 111, 130), rim, 2)
 
-        darkness = pygame.Surface((VIEW_W, SCREEN_H), pygame.SRCALPHA)
-        darkness.fill((16, 22, 35, int(38 + 65 * self.storm_intensity)))
-        self.screen.blit(darkness, (0, 0))
-
-        rain_count = int(20 + 45 * self.storm_intensity)
-        for _ in range(rain_count):
-            x = random.randrange(0, VIEW_W)
-            y = random.randrange(0, SCREEN_H)
-            length = random.randrange(8, 25)
-            pygame.draw.line(
-                self.screen,
-                (155, 176, 196),
-                (x, y),
-                (x - int(length * 0.45), y + length),
-                1,
-            )
-
-        storm_label = pygame.Rect(14, 14, 215, 48)
-        label_surface = pygame.Surface(storm_label.size, pygame.SRCALPHA)
-        label_surface.fill((20, 5, 9, 215))
-        self.screen.blit(label_surface, storm_label)
-        pygame.draw.rect(self.screen, RED, storm_label, 1, border_radius=5)
-        self.draw_text("폭풍", (storm_label.x + 10, storm_label.y + 5), self.font_sm, (255, 88, 88))
-        self.draw_text("나침반을 기준으로 방향 유지", (storm_label.x + 10, storm_label.y + 25), self.font_xs, TEXT)
+        if self.storm_intensity > 0.01:
+            storm_label = pygame.Rect(OBSERVATION_RECT.left + 14, 14, 215, 48)
+            label_surface = pygame.Surface(storm_label.size, pygame.SRCALPHA)
+            label_surface.fill((20, 5, 9, 215))
+            self.screen.blit(label_surface, storm_label)
+            pygame.draw.rect(self.screen, RED, storm_label, 1, border_radius=5)
+            self.draw_text("폭풍", (storm_label.x + 10, storm_label.y + 5), self.font_sm, (255, 88, 88))
+            self.draw_text("나침반을 기준으로 방향 유지", (storm_label.x + 10, storm_label.y + 25), self.font_xs, TEXT)
 
     def draw_map_overlay(self) -> None:
         overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
@@ -963,7 +1014,7 @@ class NightFlightGame:
     def draw(self) -> None:
         self.screen.fill(BG)
         self.draw_left_view()
-        self.apply_storm_rotation()
+        self.apply_observation_globe()
         self.draw_right_panel()
         self.draw_message()
         if pygame.key.get_pressed()[pygame.K_m]:
