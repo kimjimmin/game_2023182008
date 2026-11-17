@@ -709,23 +709,8 @@ class NightFlightGame:
             pygame.draw.rect(self.screen, (80, 82, 86), (text_x, ly, 16, 14), 1)
             self.draw_text(label, (text_x + 22, ly - 2), self.font_xs, (74, 77, 82))
 
-        if self.last_mess_cause != "없음":
-            cause_rect = pygame.Rect(chart_rect.left + 190, 12, chart_rect.width - 206, 42)
-            cause_surface = pygame.Surface(cause_rect.size, pygame.SRCALPHA)
-            cause_surface.fill((28, 5, 8, 226))
-            self.screen.blit(cause_surface, cause_rect)
-            pygame.draw.rect(self.screen, RED, cause_rect, 1, border_radius=5)
-            self.draw_text(f"최근 엉망 원인: {self.last_mess_cause}",
-                           cause_rect.center, self.font_sm, (255, 78, 78), "center")
-
         clearance = int(self.current_clearance())
         terrain = int(self.terrain_height(self.actual_pos))
-        if clearance <= 150:
-            warning_rect = pygame.Rect(chart_rect.centerx - 175, 155, 350, 42)
-            pygame.draw.rect(self.screen, (42, 4, 7), warning_rect, border_radius=5)
-            pygame.draw.rect(self.screen, (242, 35, 35), warning_rect, 2, border_radius=5)
-            self.draw_text(f"지형 접근 경고 · 여유 고도 {clearance}m",
-                           warning_rect.center, self.font_md, (255, 74, 74), "center")
         self.draw_text(f"추정 지상 여유 {clearance}m", (text_x, SCREEN_H - 54), self.font_sm,
                        GREEN if clearance > 250 else AMBER if clearance > 100 else RED)
         self.draw_text(f"현재 지형 추정 {terrain}m", (text_x, SCREEN_H - 30), self.font_xs, (92, 96, 103))
@@ -1012,6 +997,34 @@ class NightFlightGame:
             3,
         )
 
+    def draw_fixed_view_alerts(self) -> None:
+        if self.last_mess_cause != "없음":
+            cause_rect = pygame.Rect(OBSERVATION_RECT.left + 245, 12, 455, 42)
+            cause_surface = pygame.Surface(cause_rect.size, pygame.SRCALPHA)
+            cause_surface.fill((28, 5, 8, 226))
+            self.screen.blit(cause_surface, cause_rect)
+            pygame.draw.rect(self.screen, RED, cause_rect, 1, border_radius=5)
+            self.draw_text(
+                f"최근 엉망 원인: {self.last_mess_cause}",
+                cause_rect.center,
+                self.font_sm,
+                (255, 78, 78),
+                "center",
+            )
+
+        clearance = int(self.current_clearance())
+        if clearance <= 150:
+            warning_rect = pygame.Rect(OBSERVATION_RECT.centerx - 175, 155, 350, 42)
+            pygame.draw.rect(self.screen, (42, 4, 7), warning_rect, border_radius=5)
+            pygame.draw.rect(self.screen, (242, 35, 35), warning_rect, 2, border_radius=5)
+            self.draw_text(
+                f"지형 접근 경고 · 여유 고도 {clearance}m",
+                warning_rect.center,
+                self.font_md,
+                (255, 74, 74),
+                "center",
+            )
+
     def draw_map_overlay(self) -> None:
         overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
         overlay.fill((8, 10, 14, 230))
@@ -1047,6 +1060,7 @@ class NightFlightGame:
         self.apply_observation_globe()
         self.draw_known_tower_markers()
         self.draw_horizon_indicator()
+        self.draw_fixed_view_alerts()
         self.draw_right_panel()
         self.draw_message()
         if pygame.key.get_pressed()[pygame.K_m]:
