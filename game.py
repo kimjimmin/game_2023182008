@@ -18,7 +18,9 @@ OBSERVATION_X = (VIEW_W - OBSERVATION_SIZE) // 2
 OBSERVATION_RECT = pygame.Rect(OBSERVATION_X, 0, OBSERVATION_SIZE, OBSERVATION_SIZE)
 FPS = 60
 BASE_ALTITUDE_SINK = 18.0
-HIGH_ALTITUDE_THRESHOLD = 2000.0
+ALTITUDE_SAFE_MIN = 500.0
+ALTITUDE_SAFE_MAX = 2000.0
+ALTITUDE_LIMIT = 3000.0
 RAPID_CLIMB_THRESHOLD = 220.0
 RAPID_CLIMB_RESET = 150.0
 
@@ -242,6 +244,7 @@ class NightFlightGame:
         self.level_hold = 0.0
         self.stress_peak_band = 0
         self.rapid_climb_latched = False
+        self.high_altitude_failure_announced = False
         self.task: AssistantTask | None = None
         self.selected_world: pygame.Vector2 | None = None
         self.selected_screen: pygame.Vector2 | None = None
@@ -557,13 +560,25 @@ class NightFlightGame:
         self.vertical_speed += (target_vertical_speed - self.vertical_speed) * min(1.0, dt * 1.8)
         self.vertical_speed += math.sin(self.flight_time * 2.1) * self.turbulence * 7.5
         self.altitude += self.vertical_speed * dt
-        self.altitude = clamp(self.altitude, 0, 3000)
+        self.altitude = clamp(self.altitude, 0, ALTITUDE_LIMIT)
 
         if self.vertical_speed >= RAPID_CLIMB_THRESHOLD and not self.rapid_climb_latched:
             self.trigger_mess(f"급격한 상승 {self.vertical_speed:.0f}m/s")
             self.rapid_climb_latched = True
         elif self.vertical_speed < RAPID_CLIMB_RESET:
             self.rapid_climb_latched = False
+
+        if self.altitude > ALTITUDE_SAFE_MAX:
+            overload_ratio = (self.altitude - ALTITUDE_SAFE_MAX) / (
+                ALTITUDE_LIMIT - ALTITUDE_SAFE_MAX
+            )
+            failure_rate = 2.0 + 6.0 * overload_ratio
+            self.durability = max(0.0, self.durability - failure_rate * dt)
+            if not self.high_altitude_failure_announced:
+                self.post_message("고도 안정 구간 초과! 기체 기능이 손상되고 있습니다.", 7.0)
+                self.high_altitude_failure_announced = True
+        elif self.altitude < ALTITUDE_SAFE_MAX - 100:
+            self.high_altitude_failure_announced = False
 
         speed = self.speed_world()
         forward = heading_vector(self.heading)
@@ -586,12 +601,6 @@ class NightFlightGame:
             stress_causes.append(((abs(self.bank) - 38) * 1.6, f"기체 과도 기울기 {abs(self.bank):.0f}°"))
         if abs(self.pitch) > 18:
             stress_causes.append(((abs(self.pitch) - 18) * 1.2, f"과도한 기수 각도 {abs(self.pitch):.0f}°"))
-        if self.altitude > HIGH_ALTITUDE_THRESHOLD:
-            high_altitude_ratio = (self.altitude - HIGH_ALTITUDE_THRESHOLD) / (
-                3000.0 - HIGH_ALTITUDE_THRESHOLD
-            )
-            high_altitude_stress = 8.0 + 18.0 * high_altitude_ratio
-            stress_causes.append((high_altitude_stress, f"고고도 비행 {self.altitude:.0f}m"))
         turbulence_stress = self.turbulence * max(0, self.speed_level - 3) * 5
         if turbulence_stress > 0:
             stress_causes.append((turbulence_stress, "난기류 속 고속 비행"))
@@ -752,6 +761,51 @@ class NightFlightGame:
         fill.width = int(bar.width * clamp(ratio, 0, 1))
         pygame.draw.rect(self.screen, color, fill, border_radius=3)
 
+    def draw_altitude_gauge(self, rect: pygame.Rect, hidden: bool = False) -> None:
+        pygame.draw.rect(self.screen, (28, 31, 41), rect, border_radius=6)
+        pygame.draw.rect(self.screen, PANEL_LINE, rect, 1, border_radius=6)
+        if hidden:
+            pygame.draw.rect(self.screen, (0, 0, 0), rect.inflate(-4, -4), border_radius=4)
+            self.draw_text("엉망!", rect.center, self.font_md, (238, 47, 47), "center")
+            return
+
+        if self.altitude > ALTITUDE_SAFE_MAX:
+            title = "고도 · 기능 손상"
+            value_color = RED
+        elif self.altitude < ALTITUDE_SAFE_MIN:
+            title = "고도 · 상승 필요"
+            value_color = AMBER
+        else:
+            title = "고도 · 안정 구간"
+            value_color = GREEN
+
+        self.draw_text(title, (rect.x + 10, rect.y + 7), self.font_xs, MUTED)
+        self.draw_text(
+            f"{int(self.altitude)}m",
+            (rect.right - 10, rect.y + 5),
+            self.font_md,
+            value_color,
+            "topright",
+        )
+
+        bar = pygame.Rect(rect.x + 10, rect.bottom - 13, rect.width - 20, 7)
+        safe_start = int(bar.width * ALTITUDE_SAFE_MIN / ALTITUDE_LIMIT)
+        safe_end = int(bar.width * ALTITUDE_SAFE_MAX / ALTITUDE_LIMIT)
+        low_zone = pygame.Rect(bar.x, bar.y, safe_start, bar.height)
+        safe_zone = pygame.Rect(bar.x + safe_start, bar.y, safe_end - safe_start, bar.height)
+        high_zone = pygame.Rect(bar.x + safe_end, bar.y, bar.width - safe_end, bar.height)
+        pygame.draw.rect(self.screen, (116, 85, 33), low_zone, border_radius=3)
+        pygame.draw.rect(self.screen, (70, 157, 105), safe_zone)
+        pygame.draw.rect(self.screen, (145, 50, 48), high_zone, border_radius=3)
+        marker_x = bar.x + int(bar.width * clamp(self.altitude / ALTITUDE_LIMIT, 0.0, 1.0))
+        pygame.draw.line(
+            self.screen,
+            (246, 243, 232),
+            (marker_x, bar.y - 3),
+            (marker_x, bar.bottom + 3),
+            2,
+        )
+
     def draw_discovered_chart(self, rect: pygame.Rect, show_estimate: bool = True) -> None:
         """실제 map.png와 붉은 항로를 노출하지 않는 관측 기록 지도."""
         pygame.draw.rect(self.screen, (247, 247, 243), rect)
@@ -860,9 +914,10 @@ class NightFlightGame:
         width = (PANEL_W - 43) // 2
         h = 52
         col2 = x + width + 7
-        alt_color = GREEN if self.current_clearance() > 250 else AMBER if self.current_clearance() > 100 else RED
-        self.draw_gauge(pygame.Rect(x, 163, width, h), "고도", f"{int(self.altitude)}m", self.altitude / 2000,
-                        alt_color, "고도" in self.hidden_gauges)
+        self.draw_altitude_gauge(
+            pygame.Rect(x, 163, width, h),
+            "고도" in self.hidden_gauges,
+        )
         self.draw_gauge(pygame.Rect(col2, 163, width, h), "나침반", f"{int(self.heading):03d}°",
                         self.heading / 360, CYAN, "나침반" in self.hidden_gauges)
         self.draw_gauge(pygame.Rect(x, 220, width, h), "연료", f"{int(self.fuel)}%", self.fuel / 100,
