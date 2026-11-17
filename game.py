@@ -32,6 +32,7 @@ RED = (199, 74, 65)
 GREEN = (103, 179, 130)
 PURPLE = (139, 93, 174)
 CYAN = (104, 172, 190)
+HORIZON_BLUE = (55, 185, 255)
 
 
 def clamp(value: float, low: float, high: float) -> float:
@@ -693,15 +694,6 @@ class NightFlightGame:
             pygame.draw.line(self.screen, CYAN, (p.x - 15, p.y), (p.x + 15, p.y), 1)
             pygame.draw.line(self.screen, CYAN, (p.x, p.y - 15), (p.x, p.y + 15), 1)
 
-        # 수평계는 지도 상단에 독립 계기로 유지한다.
-        center = pygame.Vector2(chart_rect.centerx, chart_rect.top + 80)
-        length = 160
-        angle = math.radians(-self.bank)
-        line = pygame.Vector2(math.cos(angle), math.sin(angle)) * length / 2
-        pygame.draw.line(self.screen, (83, 74, 54), center - line, center + line, 4)
-        pygame.draw.circle(self.screen, (83, 74, 54), center, 7, 2)
-        pygame.draw.line(self.screen, (83, 74, 54), (center.x, center.y - 18), (center.x, center.y + 18), 2)
-
         text_x = chart_rect.left + 16
         self.draw_text("관측 지도 / 미확인 영역은 흰색", (text_x, 14), self.font_sm, (52, 55, 61))
         self.draw_text("클릭: 좌표 지정", (text_x, 38), self.font_xs, (92, 96, 103))
@@ -822,15 +814,6 @@ class NightFlightGame:
             point = chart_point(village)
             if key in displayed_tiles and rect.collidepoint(point):
                 pygame.draw.circle(self.screen, (200, 83, 134), point, max(3, int(6 * scale + 2)))
-        for index in self.known_towers:
-            key = (
-                int(self.towers[index].x // self.tile_world),
-                int(self.towers[index].y // self.tile_world),
-            )
-            point = chart_point(self.towers[index])
-            if key in displayed_tiles and rect.collidepoint(point):
-                pygame.draw.circle(self.screen, (232, 188, 42), point, max(3, int(6 * scale + 2)))
-
         start_key = (int(self.start.x // self.tile_world), int(self.start.y // self.tile_world))
         start_point = chart_point(self.start)
         if start_key in displayed_tiles and rect.collidepoint(start_point):
@@ -988,6 +971,47 @@ class NightFlightGame:
             self.draw_text("폭풍", (storm_label.x + 10, storm_label.y + 5), self.font_sm, (255, 88, 88))
             self.draw_text("나침반을 기준으로 방향 유지", (storm_label.x + 10, storm_label.y + 25), self.font_xs, TEXT)
 
+    def draw_known_tower_markers(self) -> None:
+        _, scale, origin = self.chart_geometry(OBSERVATION_RECT)
+        globe_center = pygame.Vector2(OBSERVATION_RECT.center)
+        angle = self.storm_rotation if self.storm_intensity > 0.01 else 0.0
+        visual_scale = self.storm_visual_scale() if self.storm_intensity > 0.01 else 1.0
+
+        for index in self.known_towers:
+            source_point = origin + self.towers[index] * scale
+            point = globe_center + (source_point - globe_center).rotate(-angle) * visual_scale
+            nx = (point.x - globe_center.x) / (OBSERVATION_SIZE * 0.48)
+            ny = (point.y - globe_center.y) / (OBSERVATION_SIZE * 0.44)
+            if nx * nx + ny * ny > 1.0:
+                continue
+            pygame.draw.circle(self.screen, (255, 220, 48), point, 9)
+            pygame.draw.circle(self.screen, (104, 78, 8), point, 9, 2)
+            pygame.draw.circle(self.screen, (255, 248, 176), point, 3)
+
+    def draw_horizon_indicator(self) -> None:
+        center = pygame.Vector2(OBSERVATION_RECT.centerx, OBSERVATION_RECT.top + 80)
+        backing = pygame.Rect(0, 0, 210, 54)
+        backing.center = center
+        backing_surface = pygame.Surface(backing.size, pygame.SRCALPHA)
+        backing_surface.fill((5, 19, 31, 180))
+        self.screen.blit(backing_surface, backing)
+        pygame.draw.rect(self.screen, (36, 116, 168), backing, 2, border_radius=8)
+
+        length = 168
+        angle = math.radians(-self.bank)
+        line = pygame.Vector2(math.cos(angle), math.sin(angle)) * length / 2
+        pygame.draw.line(self.screen, (9, 42, 67), center - line, center + line, 9)
+        pygame.draw.line(self.screen, HORIZON_BLUE, center - line, center + line, 5)
+        pygame.draw.circle(self.screen, (9, 42, 67), center, 10)
+        pygame.draw.circle(self.screen, HORIZON_BLUE, center, 8, 3)
+        pygame.draw.line(
+            self.screen,
+            HORIZON_BLUE,
+            (center.x, center.y - 20),
+            (center.x, center.y + 20),
+            3,
+        )
+
     def draw_map_overlay(self) -> None:
         overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
         overlay.fill((8, 10, 14, 230))
@@ -1021,6 +1045,8 @@ class NightFlightGame:
         self.screen.fill(BG)
         self.draw_left_view()
         self.apply_observation_globe()
+        self.draw_known_tower_markers()
+        self.draw_horizon_indicator()
         self.draw_right_panel()
         self.draw_message()
         if pygame.key.get_pressed()[pygame.K_m]:
