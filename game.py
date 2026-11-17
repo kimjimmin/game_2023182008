@@ -445,16 +445,25 @@ class NightFlightGame:
         )
         return inner, scale, origin
 
+    def visibility_grid_size(self) -> int:
+        if not self.storm_active:
+            return 12
+        deterioration_steps = int(max(0.0, self.flight_time - 23.0) // 2.0)
+        return max(6, 12 - deterioration_steps)
+
     def update_visibility(self) -> None:
         self.current_visible.clear()
-        grid_size = 5 if self.storm_active else 10
-        start_tx = math.floor(self.actual_pos.x / self.tile_world - grid_size / 2)
-        start_ty = math.floor(self.actual_pos.y / self.tile_world - grid_size / 2)
+        grid_size = self.visibility_grid_size()
+        half_view = grid_size * self.tile_world / 2
+        start_tx = math.floor((self.estimated_pos.x - half_view) / self.tile_world)
+        end_tx = math.ceil((self.estimated_pos.x + half_view) / self.tile_world)
+        start_ty = math.floor((self.estimated_pos.y - half_view) / self.tile_world)
+        end_ty = math.ceil((self.estimated_pos.y + half_view) / self.tile_world)
         max_tx = int((self.map_w - 1) // self.tile_world)
         max_ty = int((self.map_h - 1) // self.tile_world)
 
-        for ty in range(start_ty, start_ty + grid_size):
-            for tx in range(start_tx, start_tx + grid_size):
+        for ty in range(start_ty, end_ty):
+            for tx in range(start_tx, end_tx):
                 if 0 <= tx <= max_tx and 0 <= ty <= max_ty:
                     self.current_visible.add((tx, ty))
 
@@ -751,6 +760,11 @@ class NightFlightGame:
         pygame.draw.rect(self.screen, (72, 75, 82), rect, 2)
         _, scale, origin = self.chart_geometry(rect)
         displayed_tiles = self.current_visible
+        visible_size = self.visibility_grid_size() * self.tile_world * scale
+        visibility_rect = pygame.Rect(0, 0, math.ceil(visible_size), math.ceil(visible_size))
+        visibility_rect.center = rect.center
+        previous_clip = self.screen.get_clip()
+        self.screen.set_clip(previous_clip.clip(visibility_rect).clip(rect))
 
         for tx, ty in displayed_tiles:
             center = pygame.Vector2((tx + 0.5) * self.tile_world, (ty + 0.5) * self.tile_world)
@@ -825,6 +839,8 @@ class NightFlightGame:
         destination_point = chart_point(self.destination)
         if destination_key in displayed_tiles and rect.collidepoint(destination_point):
             pygame.draw.circle(self.screen, PURPLE, destination_point, 4)
+
+        self.screen.set_clip(previous_clip)
 
         if show_estimate:
             estimate = chart_point(self.estimated_pos)
