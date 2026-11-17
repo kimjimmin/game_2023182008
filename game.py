@@ -448,27 +448,28 @@ class NightFlightGame:
         return inner, scale, origin
 
     def tile_is_visible(self, world_center: pygame.Vector2) -> bool:
-        delta = world_center - self.actual_pos
-        dist = delta.length()
-        immediate_vision = max(24.0, 46.0 * (1.0 - self.storm_intensity * 0.45))
-        if dist < immediate_vision:
-            return True
-        vision = max(48.0, 190.0 * (1.0 - self.storm_intensity * 0.75))
-        if dist > vision:
-            return False
-        if dist == 0:
-            return True
-        forward = heading_vector(self.heading)
-        dot = forward.dot(delta.normalize())
-        minimum_dot = -0.12 + self.storm_intensity * 0.47
-        return dot > minimum_dot
+        return distance(world_center, self.actual_pos) <= 190.0
 
     def update_visibility(self) -> None:
         self.current_visible.clear()
-        min_x = max(0, int((self.actual_pos.x - 220) // self.tile_world))
-        max_x = min(int(self.map_w // self.tile_world), int((self.actual_pos.x + 220) // self.tile_world) + 1)
-        min_y = max(0, int((self.actual_pos.y - 220) // self.tile_world))
-        max_y = min(int(self.map_h // self.tile_world), int((self.actual_pos.y + 220) // self.tile_world) + 1)
+
+        if self.storm_active:
+            center_tx = int(self.actual_pos.x // self.tile_world)
+            center_ty = int(self.actual_pos.y // self.tile_world)
+            max_tx = int((self.map_w - 1) // self.tile_world)
+            max_ty = int((self.map_h - 1) // self.tile_world)
+            for ty in range(center_ty - 1, center_ty + 2):
+                for tx in range(center_tx - 1, center_tx + 2):
+                    if 0 <= tx <= max_tx and 0 <= ty <= max_ty:
+                        self.current_visible.add((tx, ty))
+            self.remembered.update(self.current_visible)
+            return
+
+        vision_radius = 190.0
+        min_x = max(0, int((self.actual_pos.x - vision_radius) // self.tile_world))
+        max_x = min(int(self.map_w // self.tile_world), int((self.actual_pos.x + vision_radius) // self.tile_world) + 1)
+        min_y = max(0, int((self.actual_pos.y - vision_radius) // self.tile_world))
+        max_y = min(int(self.map_h // self.tile_world), int((self.actual_pos.y + vision_radius) // self.tile_world) + 1)
         for ty in range(min_y, max_y + 1):
             for tx in range(min_x, max_x + 1):
                 center = pygame.Vector2((tx + 0.5) * self.tile_world, (ty + 0.5) * self.tile_world)
@@ -768,8 +769,9 @@ class NightFlightGame:
         pygame.draw.rect(self.screen, (247, 247, 243), rect)
         pygame.draw.rect(self.screen, (72, 75, 82), rect, 2)
         _, scale, origin = self.chart_geometry(rect)
+        displayed_tiles = self.current_visible if self.storm_active else self.remembered
 
-        for tx, ty in self.remembered:
+        for tx, ty in displayed_tiles:
             center = pygame.Vector2((tx + 0.5) * self.tile_world, (ty + 0.5) * self.tile_world)
             elevation = self.terrain_height(center)
             if elevation < 250:
@@ -823,20 +825,24 @@ class NightFlightGame:
         for village in self.villages:
             key = (int(village.x // self.tile_world), int(village.y // self.tile_world))
             point = chart_point(village)
-            if key in self.remembered and rect.collidepoint(point):
+            if key in displayed_tiles and rect.collidepoint(point):
                 pygame.draw.circle(self.screen, (200, 83, 134), point, max(3, int(6 * scale + 2)))
         for index in self.known_towers:
+            key = (
+                int(self.towers[index].x // self.tile_world),
+                int(self.towers[index].y // self.tile_world),
+            )
             point = chart_point(self.towers[index])
-            if rect.collidepoint(point):
+            if key in displayed_tiles and rect.collidepoint(point):
                 pygame.draw.circle(self.screen, (232, 188, 42), point, max(3, int(6 * scale + 2)))
 
         start_key = (int(self.start.x // self.tile_world), int(self.start.y // self.tile_world))
         start_point = chart_point(self.start)
-        if start_key in self.remembered and rect.collidepoint(start_point):
+        if start_key in displayed_tiles and rect.collidepoint(start_point):
             pygame.draw.circle(self.screen, (25, 25, 25), start_point, 3)
         destination_key = (int(self.destination.x // self.tile_world), int(self.destination.y // self.tile_world))
         destination_point = chart_point(self.destination)
-        if destination_key in self.remembered and rect.collidepoint(destination_point):
+        if destination_key in displayed_tiles and rect.collidepoint(destination_point):
             pygame.draw.circle(self.screen, PURPLE, destination_point, 4)
 
         if show_estimate:
