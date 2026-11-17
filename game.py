@@ -175,11 +175,10 @@ class NightFlightGame:
                     self.world_surface.set_at((px, py), replacement)
         self.mountains = self.build_mountains()
 
-        self.camera_world_w = 510.0
+        self.camera_world_w = 620.0
         self.camera_world_h = self.camera_world_w
         self.tile_world = 34.0
         self.current_visible: set[tuple[int, int]] = set()
-        self.remembered: set[tuple[int, int]] = set()
         self.known_towers: set[int] = set()
 
         self.buttons = self.build_buttons()
@@ -259,7 +258,6 @@ class NightFlightGame:
         self.storm_gust_timer = 0.0
         self.storm_wind = pygame.Vector2()
         self.current_visible.clear()
-        self.remembered.clear()
         self.known_towers.clear()
 
     def terrain_height(self, point: pygame.Vector2) -> float:
@@ -447,35 +445,18 @@ class NightFlightGame:
         )
         return inner, scale, origin
 
-    def tile_is_visible(self, world_center: pygame.Vector2) -> bool:
-        return distance(world_center, self.actual_pos) <= 190.0
-
     def update_visibility(self) -> None:
         self.current_visible.clear()
+        grid_size = 5 if self.storm_active else 10
+        start_tx = math.floor(self.actual_pos.x / self.tile_world - grid_size / 2)
+        start_ty = math.floor(self.actual_pos.y / self.tile_world - grid_size / 2)
+        max_tx = int((self.map_w - 1) // self.tile_world)
+        max_ty = int((self.map_h - 1) // self.tile_world)
 
-        if self.storm_active:
-            center_tx = int(self.actual_pos.x // self.tile_world)
-            center_ty = int(self.actual_pos.y // self.tile_world)
-            max_tx = int((self.map_w - 1) // self.tile_world)
-            max_ty = int((self.map_h - 1) // self.tile_world)
-            for ty in range(center_ty - 1, center_ty + 2):
-                for tx in range(center_tx - 1, center_tx + 2):
-                    if 0 <= tx <= max_tx and 0 <= ty <= max_ty:
-                        self.current_visible.add((tx, ty))
-            self.remembered.update(self.current_visible)
-            return
-
-        vision_radius = 190.0
-        min_x = max(0, int((self.actual_pos.x - vision_radius) // self.tile_world))
-        max_x = min(int(self.map_w // self.tile_world), int((self.actual_pos.x + vision_radius) // self.tile_world) + 1)
-        min_y = max(0, int((self.actual_pos.y - vision_radius) // self.tile_world))
-        max_y = min(int(self.map_h // self.tile_world), int((self.actual_pos.y + vision_radius) // self.tile_world) + 1)
-        for ty in range(min_y, max_y + 1):
-            for tx in range(min_x, max_x + 1):
-                center = pygame.Vector2((tx + 0.5) * self.tile_world, (ty + 0.5) * self.tile_world)
-                if self.tile_is_visible(center):
+        for ty in range(start_ty, start_ty + grid_size):
+            for tx in range(start_tx, start_tx + grid_size):
+                if 0 <= tx <= max_tx and 0 <= ty <= max_ty:
                     self.current_visible.add((tx, ty))
-        self.remembered.update(self.current_visible)
 
     def handle_event(self, event: pygame.event.Event) -> None:
         if event.type == pygame.QUIT:
@@ -769,7 +750,7 @@ class NightFlightGame:
         pygame.draw.rect(self.screen, (247, 247, 243), rect)
         pygame.draw.rect(self.screen, (72, 75, 82), rect, 2)
         _, scale, origin = self.chart_geometry(rect)
-        displayed_tiles = self.current_visible if self.storm_active else self.remembered
+        displayed_tiles = self.current_visible
 
         for tx, ty in displayed_tiles:
             center = pygame.Vector2((tx + 0.5) * self.tile_world, (ty + 0.5) * self.tile_world)
