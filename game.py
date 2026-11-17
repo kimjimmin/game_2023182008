@@ -245,6 +245,15 @@ class NightFlightGame:
         self.game_state = "playing"
         self.turbulence = 0.0
         self.wind = pygame.Vector2(0.20, 0.05)
+        self.storm_active = False
+        self.storm_announced = False
+        self.storm_intensity = 0.0
+        self.storm_rotation = 0.0
+        self.storm_target_rotation = 0.0
+        self.storm_rotation_direction = 1
+        self.storm_rotation_timer = 0.0
+        self.storm_gust_timer = 0.0
+        self.storm_wind = pygame.Vector2()
         self.current_visible.clear()
         self.remembered.clear()
         self.known_towers.clear()
@@ -264,6 +273,45 @@ class NightFlightGame:
 
     def current_clearance(self) -> float:
         return self.altitude - self.terrain_height(self.actual_pos)
+
+    def storm_visual_scale(self) -> float:
+        return 1.0 + self.storm_intensity * 0.14
+
+    def update_storm(self, dt: float) -> None:
+        if self.flight_time < 23.0:
+            self.storm_intensity = 0.0
+            self.storm_rotation += (0.0 - self.storm_rotation) * min(1.0, dt * 3.0)
+            return
+
+        if not self.storm_active:
+            self.storm_active = True
+            self.storm_rotation_direction = random.choice([-1, 1])
+            wind_heading = random.uniform(0, 360)
+            self.storm_wind = heading_vector(wind_heading) * random.uniform(3.2, 5.2)
+            self.storm_rotation_timer = 0.0
+            self.storm_gust_timer = 0.0
+
+        if not self.storm_announced:
+            self.storm_announced = True
+            self.post_message("폭풍 진입! 좌측 화면이 흔들립니다. 우측 나침반을 기준으로 방향을 유지하십시오.", 11.0)
+
+        self.storm_intensity = clamp((self.flight_time - 23.0) / 4.0, 0.0, 1.0)
+        self.storm_rotation_timer -= dt
+        if self.storm_rotation_timer <= 0:
+            if random.random() < 0.35:
+                self.storm_rotation_direction *= -1
+            magnitude = random.uniform(22.0, 78.0) * self.storm_intensity
+            self.storm_target_rotation = self.storm_rotation_direction * magnitude
+            self.storm_rotation_timer = random.uniform(1.2, 2.6)
+        self.storm_rotation += (
+            self.storm_target_rotation - self.storm_rotation
+        ) * min(1.0, dt * (1.4 + self.storm_intensity))
+
+        self.storm_gust_timer -= dt
+        if self.storm_gust_timer <= 0 and self.storm_intensity > 0:
+            self.bank += random.uniform(-13.0, 13.0) * self.storm_intensity
+            self.pitch += random.uniform(-6.0, 6.0) * self.storm_intensity
+            self.storm_gust_timer = random.uniform(0.45, 1.05)
 
     def post_message(self, text: str, duration: float = 5.0) -> None:
         self.message = text
@@ -340,6 +388,10 @@ class NightFlightGame:
     def screen_to_world(self, point: pygame.Vector2) -> pygame.Vector2 | None:
         if point.x >= VIEW_W:
             return None
+        if self.storm_intensity > 0.01:
+            screen_center = pygame.Vector2(VIEW_W / 2, SCREEN_H / 2)
+            local = point - screen_center
+            point = screen_center + local.rotate(-self.storm_rotation) / self.storm_visual_scale()
         _, scale, origin = self.chart_geometry(pygame.Rect(0, 0, VIEW_W, SCREEN_H))
         world_x = (point.x - origin.x) / scale
         world_y = (point.y - origin.y) / scale
@@ -367,16 +419,18 @@ class NightFlightGame:
     def tile_is_visible(self, world_center: pygame.Vector2) -> bool:
         delta = world_center - self.actual_pos
         dist = delta.length()
-        if dist < 46:
+        immediate_vision = max(24.0, 46.0 * (1.0 - self.storm_intensity * 0.45))
+        if dist < immediate_vision:
             return True
-        vision = 190 - self.turbulence * 55
+        vision = max(48.0, 190.0 * (1.0 - self.storm_intensity * 0.75))
         if dist > vision:
             return False
         if dist == 0:
             return True
         forward = heading_vector(self.heading)
         dot = forward.dot(delta.normalize())
-        return dot > -0.12
+        minimum_dot = -0.12 + self.storm_intensity * 0.47
+        return dot > minimum_dot
 
     def update_visibility(self) -> None:
         self.current_visible.clear()
@@ -457,9 +511,9 @@ class NightFlightGame:
             self.message_timer -= dt
 
         self.update_controls(dt)
+        self.update_storm(dt)
 
-        # 시간이 지나면 측풍과 난기류가 조금씩 강해진다.
-        self.turbulence = clamp((self.flight_time - 20) / 75, 0.0, 0.75)
+        self.turbulence = self.storm_intensity
         gust = math.sin(self.flight_time * 1.7) * self.turbulence
         self.bank += gust * dt * 9.0
         self.pitch += math.sin(self.flight_time * 2.4) * self.turbulence * dt * 4.0
@@ -476,7 +530,7 @@ class NightFlightGame:
         speed = self.speed_world()
         forward = heading_vector(self.heading)
         ideal_delta = forward * speed * dt
-        wind_delta = self.wind * dt * (1.0 + self.turbulence * 2.0)
+        wind_delta = (self.wind + self.storm_wind * self.storm_intensity) * dt
         self.actual_pos += ideal_delta + wind_delta
         self.estimated_pos += ideal_delta
         self.actual_pos.x = clamp(self.actual_pos.x, 0, self.map_w - 1)
@@ -838,6 +892,45 @@ class NightFlightGame:
         self.draw_text("운항 지시", (rect.x + 14, rect.y + 9), self.font_xs, AMBER)
         self.draw_text(self.message, (rect.x + 14, rect.y + 31), self.font_sm, TEXT)
 
+    def apply_storm_rotation(self) -> None:
+        if self.storm_intensity <= 0.01:
+            return
+
+        left_image = self.screen.subsurface((0, 0, VIEW_W, SCREEN_H)).copy()
+        rotated = pygame.transform.rotozoom(
+            left_image,
+            self.storm_rotation,
+            self.storm_visual_scale(),
+        )
+        rotated_rect = rotated.get_rect(center=(VIEW_W // 2, SCREEN_H // 2))
+        pygame.draw.rect(self.screen, (30, 34, 42), (0, 0, VIEW_W, SCREEN_H))
+        self.screen.blit(rotated, rotated_rect)
+
+        darkness = pygame.Surface((VIEW_W, SCREEN_H), pygame.SRCALPHA)
+        darkness.fill((16, 22, 35, int(38 + 65 * self.storm_intensity)))
+        self.screen.blit(darkness, (0, 0))
+
+        rain_count = int(20 + 45 * self.storm_intensity)
+        for _ in range(rain_count):
+            x = random.randrange(0, VIEW_W)
+            y = random.randrange(0, SCREEN_H)
+            length = random.randrange(8, 25)
+            pygame.draw.line(
+                self.screen,
+                (155, 176, 196),
+                (x, y),
+                (x - int(length * 0.45), y + length),
+                1,
+            )
+
+        storm_label = pygame.Rect(14, 14, 215, 48)
+        label_surface = pygame.Surface(storm_label.size, pygame.SRCALPHA)
+        label_surface.fill((20, 5, 9, 215))
+        self.screen.blit(label_surface, storm_label)
+        pygame.draw.rect(self.screen, RED, storm_label, 1, border_radius=5)
+        self.draw_text("폭풍", (storm_label.x + 10, storm_label.y + 5), self.font_sm, (255, 88, 88))
+        self.draw_text("나침반을 기준으로 방향 유지", (storm_label.x + 10, storm_label.y + 25), self.font_xs, TEXT)
+
     def draw_map_overlay(self) -> None:
         overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
         overlay.fill((8, 10, 14, 230))
@@ -870,6 +963,7 @@ class NightFlightGame:
     def draw(self) -> None:
         self.screen.fill(BG)
         self.draw_left_view()
+        self.apply_storm_rotation()
         self.draw_right_panel()
         self.draw_message()
         if pygame.key.get_pressed()[pygame.K_m]:
