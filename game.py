@@ -17,6 +17,10 @@ OBSERVATION_SIZE = SCREEN_H
 OBSERVATION_X = (VIEW_W - OBSERVATION_SIZE) // 2
 OBSERVATION_RECT = pygame.Rect(OBSERVATION_X, 0, OBSERVATION_SIZE, OBSERVATION_SIZE)
 FPS = 60
+BASE_ALTITUDE_SINK = 18.0
+HIGH_ALTITUDE_THRESHOLD = 2000.0
+RAPID_CLIMB_THRESHOLD = 220.0
+RAPID_CLIMB_RESET = 150.0
 
 ROOT = Path(__file__).resolve().parent
 ASSET_DIR = ROOT / "assets_source"
@@ -237,6 +241,7 @@ class NightFlightGame:
         self.tutorial_step = 0
         self.level_hold = 0.0
         self.stress_peak_band = 0
+        self.rapid_climb_latched = False
         self.task: AssistantTask | None = None
         self.selected_world: pygame.Vector2 | None = None
         self.selected_screen: pygame.Vector2 | None = None
@@ -394,10 +399,13 @@ class NightFlightGame:
             self.known_towers.add(nearest_index)
             bearing = bearing_between(self.actual_pos, tower)
             dist = int(distance(self.actual_pos, tower))
+            bearing_degrees = int(round(bearing)) % 360
             # 위치 보고를 받으면 추정 위치가 실제 위치 쪽으로 보정된다.
             self.estimated_pos = self.estimated_pos.lerp(self.actual_pos, 0.72)
             self.post_message(
-                f"교신 성공: {compass_name(bearing)}쪽 약 {dist} 지도단위에 송신탑이 있습니다.", 9.0
+                f"교신 성공: 송신탑은 {compass_name(bearing)}쪽 {bearing_degrees:03d}°, "
+                f"약 {dist} 지도단위에 있습니다.",
+                9.0,
             )
         elif task.kind == "organize":
             restored = self.hidden_gauges.pop(0) if self.hidden_gauges else "계기"
@@ -545,10 +553,17 @@ class NightFlightGame:
         self.heading = (self.heading + self.bank * 0.34 * turn_multiplier * dt) % 360
 
         climb_power = 15.0 if self.speed_level > 0 else 5.0
-        self.vertical_speed += (self.pitch * climb_power - self.vertical_speed) * min(1.0, dt * 1.8)
+        target_vertical_speed = self.pitch * climb_power - BASE_ALTITUDE_SINK
+        self.vertical_speed += (target_vertical_speed - self.vertical_speed) * min(1.0, dt * 1.8)
         self.vertical_speed += math.sin(self.flight_time * 2.1) * self.turbulence * 7.5
         self.altitude += self.vertical_speed * dt
         self.altitude = clamp(self.altitude, 0, 3000)
+
+        if self.vertical_speed >= RAPID_CLIMB_THRESHOLD and not self.rapid_climb_latched:
+            self.trigger_mess(f"급격한 상승 {self.vertical_speed:.0f}m/s")
+            self.rapid_climb_latched = True
+        elif self.vertical_speed < RAPID_CLIMB_RESET:
+            self.rapid_climb_latched = False
 
         speed = self.speed_world()
         forward = heading_vector(self.heading)
@@ -571,6 +586,12 @@ class NightFlightGame:
             stress_causes.append(((abs(self.bank) - 38) * 1.6, f"기체 과도 기울기 {abs(self.bank):.0f}°"))
         if abs(self.pitch) > 18:
             stress_causes.append(((abs(self.pitch) - 18) * 1.2, f"과도한 기수 각도 {abs(self.pitch):.0f}°"))
+        if self.altitude > HIGH_ALTITUDE_THRESHOLD:
+            high_altitude_ratio = (self.altitude - HIGH_ALTITUDE_THRESHOLD) / (
+                3000.0 - HIGH_ALTITUDE_THRESHOLD
+            )
+            high_altitude_stress = 8.0 + 18.0 * high_altitude_ratio
+            stress_causes.append((high_altitude_stress, f"고고도 비행 {self.altitude:.0f}m"))
         turbulence_stress = self.turbulence * max(0, self.speed_level - 3) * 5
         if turbulence_stress > 0:
             stress_causes.append((turbulence_stress, "난기류 속 고속 비행"))
@@ -967,11 +988,25 @@ class NightFlightGame:
             point = globe_center + (source_point - globe_center).rotate(-angle) * visual_scale
             nx = (point.x - globe_center.x) / (OBSERVATION_SIZE * 0.48)
             ny = (point.y - globe_center.y) / (OBSERVATION_SIZE * 0.44)
-            if nx * nx + ny * ny > 1.0:
-                continue
+            ellipse_distance = math.sqrt(nx * nx + ny * ny)
+            if ellipse_distance > 0.92:
+                point = globe_center + (point - globe_center) * (0.92 / ellipse_distance)
             pygame.draw.circle(self.screen, (255, 220, 48), point, 9)
             pygame.draw.circle(self.screen, (104, 78, 8), point, 9, 2)
             pygame.draw.circle(self.screen, (255, 248, 176), point, 3)
+
+            bearing = bearing_between(self.actual_pos, self.towers[index])
+            bearing_text = f"{int(round(bearing)) % 360:03d}°"
+            label_surface = self.font_xs.render(bearing_text, True, (255, 232, 91))
+            label_rect = label_surface.get_rect()
+            if point.x < globe_center.x:
+                label_rect.midleft = (int(point.x + 13), int(point.y))
+            else:
+                label_rect.midright = (int(point.x - 13), int(point.y))
+            label_back = label_rect.inflate(8, 5)
+            pygame.draw.rect(self.screen, (30, 24, 7), label_back, border_radius=4)
+            pygame.draw.rect(self.screen, (162, 128, 19), label_back, 1, border_radius=4)
+            self.screen.blit(label_surface, label_rect)
 
     def draw_horizon_indicator(self) -> None:
         center = pygame.Vector2(OBSERVATION_RECT.centerx, OBSERVATION_RECT.top + 80)
